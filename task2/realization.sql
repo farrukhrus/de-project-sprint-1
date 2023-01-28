@@ -8,7 +8,8 @@ create or replace view analysis.orders_v as (
 			o.bonus_grant, 
 			os.status_id as status
 	from production.orders o 
-	inner join (select order_id, status_id, max(dttm) as max_date 
-				from production.orderstatuslog group by order_id, status_id) os 
-	on o.order_id = os.order_id
+	inner join (select order_id, status_id, 
+					rank() over (partition by order_id order by dttm desc) as rank_n
+				from production.orderstatuslog ) os 
+	on o.order_id = os.order_id and os.rank_n = 1
 );

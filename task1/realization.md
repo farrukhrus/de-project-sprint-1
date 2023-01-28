@@ -42,6 +42,8 @@
 Изучите качество входных данных. Опишите, насколько качественные данные хранятся в источнике. Так же укажите, какие инструменты обеспечения качества данных были использованы в таблицах в схеме production.
 
 -----------
+https://docs.google.com/spreadsheets/d/1ugPus0-NTPU9Oz3AfkjGofcV9LV32qaEtaJDc2KKUWA/edit?usp=sharing
+
 
 В таблице orders отсутствуют дубли и NULL значения по ключевому полю order_id. 
 В таблице orderstatuses имеет только уникальные значения в ключевом поле id;
@@ -71,21 +73,6 @@ create or replace view analysis.orderitems_v as (select * from production.orderi
 create or replace view analysis.orders_v as (select * from production.orders);
 create or replace view analysis.orderstatuslog_v as (select * from production.orderstatuslog);
 create or replace view analysis.orderstatuses_v as (select * from production.orderstatuses);
---or 
-create or replace view analysis.dm_rfm_segments_v as (
-	select user_id, 
-	       ntile(5) over (order by last_order_dt) as recency,
-	       ntile(5) over (order by order_count) as frequency,
-	       ntile(5) over (order by order_sum) as monetary_value
-	from (
-		select user_id, 
-			   max(order_ts) as last_order_dt,
-			   count(distinct order_id) as order_count,
-			   sum(payment) as order_sum
-		from production.orders o inner join production.orderstatuses os on o.status = os.id
-		where os."key" = 'Closed'
-	group by user_id) t1 
-)
 ```
 
 ### 1.4.2. Напишите DDL-запрос для создания витрины.**
@@ -96,9 +83,9 @@ create or replace view analysis.dm_rfm_segments_v as (
 create table analysis.dm_rfm_segments
 (
 	user_id int primary key,
-	recency int not null check (recency between 0 and 5),
-	frequency int not null check (frequency between 0 and 5),
-	monetary_value int not null check (monetary_value between 0 and 5)
+	recency int not null check (recency between 1 and 5),
+	frequency int not null check (frequency between 1 and 5),
+	monetary_value int not null check (monetary_value between 1 and 5)
 )
 ```
 
@@ -110,26 +97,29 @@ create table analysis.dm_rfm_segments
 
 ```SQL
 insert into analysis.dm_rfm_segments (user_id, recency, frequency, monetary_value)
-    (
-    select user_id, 
-	       ntile(5) over (order by last_order_dt) as recency,
-	       ntile(5) over (order by order_count) as frequency,
-	       ntile(5) over (order by order_sum) as monetary_value
-	from (
-		select user_id, 
-			   max(order_ts) as last_order_dt,
-			   count(distinct order_id) as order_count,
-			   sum(payment) as order_sum
-		from analysis.orders_v o inner join analysis.orderstatuses_v os on o.status = os.id
-		where os."key" = 'Closed'
-	group by user_id) t1 
-)
-
---or
-insert into analysis.dm_rfm_segments (user_id, recency, frequency, monetary_value) (
-	select user_id, recency, frequency, monetary_value from analysis.dm_rfm_segments_v
+(
+	select user_id,  
+	       ntile(5) over (order by last_order_dt) as recency, 
+	       ntile(5) over (order by order_count) as frequency, 
+	       ntile(5) over (order by order_sum) as monetary_value 
+	from ( 
+		select uv.id as user_id,
+		       -- взял заведомо меньшую дату, не не уверен, что правильный подход ....
+			   coalesce(t1.last_order_dt,to_timestamp('01.01.1000','dd.mm.yyyy')) as last_order_dt,
+			   coalesce(t1.order_count,0)  as order_count,
+			   coalesce(t1.order_sum,0)  as order_sum 
+		from analysis.users_v uv left join (select user_id,  
+				   max(order_ts) as last_order_dt, 
+				   count(distinct order_id) as order_count, 
+				   sum(payment) as order_sum 
+			from analysis.orders_v o inner join analysis.orderstatuses_v os on o.status = os.id 
+			where os."key" = 'Closed' 
+		group by user_id) t1  on uv.id = t1.user_id
+	) t2
 )
 ```
+
+Я считаю требование создавать отдельную временную таблицу под каждую метрику избыточным. Я бы не стал плодить кучу объектов в базе, если можно обойтись одной таблицей. Можно создать временную буферную таблицу analysis.dm_rfm_segments_TMP, в которой будут считаться данные перед вставкой в основную таблицу, в том случае, если у нас большая сегментированная основная таблица, то это будет просто необходимо, но т.к. у нас витрина обновляться не будет, то и в analysis.dm_rfm_segments_TMP тоже смысла нет.
 
 
 
